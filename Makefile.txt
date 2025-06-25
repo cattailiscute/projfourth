@@ -1,0 +1,148 @@
+# IoT 혼잡도 관리 시스템 Makefile
+# GPIO 17-26 연결 기반
+
+MODULE_NAME = crowd_driver
+obj-m += $(MODULE_NAME).o
+
+KERNEL_DIR ?= /lib/modules/$(shell uname -r)/build
+PWD := $(shell pwd)
+
+# 기본 타겟: 모든 컴포넌트 빌드
+all: module apps
+
+# 커널 모듈 컴파일
+module:
+	@echo "=== 드라이버 컴파일 ==="
+	$(MAKE) -C $(KERNEL_DIR) M=$(PWD) modules
+	@echo "드라이버 컴파일 완료: $(MODULE_NAME).ko"
+
+# 응용프로그램 컴파일
+apps: tx_app rx_app
+
+tx_app:
+	@echo "=== 송신 프로그램 컴파일 ==="
+	gcc -o crowd_tx tx_app.c
+	@echo "송신 프로그램 컴파일 완료: crowd_tx"
+
+rx_app:
+	@echo "=== 수신 프로그램 컴파일 ==="
+	gcc -o crowd_rx rx_app.c
+	@echo "수신 프로그램 컴파일 완료: crowd_rx"
+
+# 드라이버 로드
+load: module
+	@echo "=== 드라이버 로드 ==="
+	-sudo rmmod $(MODULE_NAME) 2>/dev/null || true
+	sudo insmod $(MODULE_NAME).ko
+	@echo "드라이버 로드 완료"
+	@echo "디바이스 확인:"
+	@ls -la /dev/crowd_gpio* 2>/dev/null || echo "디바이스 노드 생성 대기중..."
+	@sleep 1
+	@ls -la /dev/crowd_gpio* 2>/dev/null || echo "디바이스 노드가 생성되지 않았습니다"
+
+# 드라이버 언로드
+unload:
+	@echo "=== 드라이버 언로드 ==="
+	sudo rmmod $(MODULE_NAME)
+	@echo "언로드 완료"
+
+# 테스트 실행
+test: load
+	@echo "=== 시스템 테스트 ==="
+	@echo "1. 디바이스 노드 확인"
+	@ls -la /dev/crowd_gpio* && echo "✓ 디바이스 노드 OK" || echo "✗ 디바이스 노드 없음"
+	@echo ""
+	@echo "2. 권한 설정"
+	sudo chmod 666 /dev/crowd_gpio*
+	@echo "✓ 권한 설정 완료"
+	@echo ""
+	@echo "3. sysfs 확인"
+	@ls -la /sys/class/crowd_monitor/ 2>/dev/null && echo "✓ sysfs OK" || echo "✗ sysfs 없음"
+	@echo ""
+	@echo "4. 기본 상태 확인"
+	@echo "송신 디바이스 상태:"
+	@cat /sys/class/crowd_monitor/crowd_gpio0/occupancy 2>/dev/null || echo "N/A"
+	@echo "수신 디바이스 상태:"
+	@cat /sys/class/crowd_monitor/crowd_gpio1/occupancy 2>/dev/null || echo "N/A"
+
+# 빠른 테스트 (권한 문제 해결)
+quick-test: load
+	@echo "=== 빠른 테스트 ==="
+	sudo chmod 666 /dev/crowd_gpio*
+	@echo "송신 테스트 (백그라운드):"
+	@(sudo ./crowd_tx &)
+	@sleep 2
+	@echo "수신 테스트:"
+	@timeout 5 sudo ./crowd_rx || echo "테스트 완료"
+
+# 수동 테스트
+manual-test: load
+	@echo "=== 수동 테스트 가이드 ==="
+	@echo "1. 터미널 1에서 수신 프로그램 실행:"
+	@echo "   sudo ./crowd_rx"
+	@echo ""
+	@echo "2. 터미널 2에서 송신 프로그램 실행:"
+	@echo "   sudo ./crowd_tx"
+	@echo ""
+	@echo "3. 또는 직접 명령 전송:"
+	@echo "   echo 'ENTER' | sudo tee /dev/crowd_gpio0"
+	@echo "   echo 'EXIT' | sudo tee /dev/crowd_gpio0"
+
+# 로그 확인
+log:
+	@echo "=== 실시간 로그 확인 ==="
+	sudo dmesg -wH | grep crowd_monitor
+
+# 상태 확인
+status:
+	@echo "=== 시스템 상태 ==="
+	@echo "로드된 모듈:"
+	@lsmod | grep crowd || echo "모듈이 로드되지 않음"
+	@echo ""
+	@echo "디바이스 노드:"
+	@ls -la /dev/crowd_gpio* 2>/dev/null || echo "디바이스 노드 없음"
+	@echo ""
+	@echo "현재 상태:"
+	@cat /sys/class/crowd_monitor/crowd_gpio0/occupancy 2>/dev/null | sed 's/^/송신 디바이스 인원: /' || echo "송신 디바이스 정보 없음"
+	@cat /sys/class/crowd_monitor/crowd_gpio1/occupancy 2>/dev/null | sed 's/^/수신 디바이스 인원: /' || echo "수신 디바이스 정보 없음"
+
+# 정리
+clean:
+	@echo "=== 정리 ==="
+	$(MAKE) -C $(KERNEL_DIR) M=$(PWD) clean
+	rm -f crowd_tx crowd_rx
+	rm -f *.o *.ko *.mod.c *.mod *.order *.symvers
+	@echo "정리 완료"
+
+# 전체 정리
+distclean: unload clean
+	@echo "전체 정리 완료"
+
+# 도움말
+help:
+	@echo "GPIO 17-26 연결 기반 IoT 혼잡도 관리 시스템"
+	@echo "=============================================="
+	@echo ""
+	@echo "하드웨어 연결:"
+	@echo "  GPIO 17 (송신) ↔ GPIO 26 (수신)"
+	@echo "  GND ↔ GND"
+	@echo ""
+	@echo "사용 가능한 명령:"
+	@echo "  make              - 전체 빌드"
+	@echo "  make module       - 드라이버만 컴파일"
+	@echo "  make apps         - 응용프로그램만 컴파일"
+	@echo "  make load         - 드라이버 로드"
+	@echo "  make test         - 자동 테스트"
+	@echo "  make quick-test   - 빠른 테스트"
+	@echo "  make manual-test  - 수동 테스트 가이드"
+	@echo "  make status       - 시스템 상태 확인"
+	@echo "  make log          - 실시간 로그 확인"
+	@echo "  make unload       - 드라이버 언로드"
+	@echo "  make clean        - 빌드 파일 정리"
+	@echo "  make distclean    - 전체 정리"
+	@echo ""
+	@echo "사용 예시:"
+	@echo "  1. make load      # 드라이버 로드"
+	@echo "  2. make test      # 기본 테스트"
+	@echo "  3. 터미널1: sudo ./crowd_rx"
+	@echo "  4. 터미널2: sudo ./crowd_tx"
